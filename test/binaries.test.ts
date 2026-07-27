@@ -8,9 +8,10 @@ import {
   type ResolveContext,
 } from '../src/binaries';
 
-// Paths are built with path.join so the fixtures use the separator of whichever
-// platform the suite runs on, matching what the resolver itself produces.
-const p = (...segments: string[]): string => path.join(path.sep, ...segments);
+// Fixtures are built the way the resolver builds its candidates: joined with the
+// platform separator, and resolved, because walking ancestors resolves first and
+// on Windows that prefixes the current drive letter.
+const p = (...segments: string[]): string => path.resolve(path.join(path.sep, ...segments));
 
 const USR_BIN = p('usr', 'bin');
 const LOCAL_BIN = p('usr', 'local', 'bin');
