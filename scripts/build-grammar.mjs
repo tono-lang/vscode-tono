@@ -67,26 +67,44 @@ function resolveGrammarDir() {
   return { dir: cache, pinned: true };
 }
 
+// spawnSync launches an executable directly, and on Windows a globally installed
+// node tool is a .cmd shim that only a shell would resolve. Naming the shim keeps
+// the arguments out of a shell, which would otherwise need quoting for any path
+// containing a space.
+const executableNames = (command) =>
+  process.platform === 'win32' ? [`${command}.cmd`, `${command}.exe`, command] : [command];
+
+function findGlobalTreeSitter() {
+  for (const command of executableNames('tree-sitter')) {
+    const reported = capture(command, ['--version']);
+    if (reported) {
+      return { command, reported };
+    }
+  }
+  return undefined;
+}
+
 // A global CLI is used only when its minor version matches the pin. The CLI
 // decides the parser ABI, and a mismatch produces a wasm that loads fine here but
 // makes setLanguage throw at runtime, surfacing only as highlighting that never
 // starts. An older CLI also spells this command `build-wasm`.
 function resolveTreeSitterCli() {
-  const pinned = { command: 'npx', args: ['--yes', `tree-sitter-cli@${pin.treeSitterCli}`] };
-  const reported = capture('tree-sitter', ['--version']);
-  if (!reported) {
+  const [npx] = executableNames('npx');
+  const pinned = { command: npx, args: ['--yes', `tree-sitter-cli@${pin.treeSitterCli}`] };
+  const global = findGlobalTreeSitter();
+  if (!global) {
     return pinned;
   }
 
-  const found = /(\d+)\.(\d+)\.(\d+)/.exec(reported);
+  const found = /(\d+)\.(\d+)\.(\d+)/.exec(global.reported);
   const wanted = /(\d+)\.(\d+)\.(\d+)/.exec(pin.treeSitterCli);
   if (found && wanted && found[1] === wanted[1] && found[2] === wanted[2]) {
-    return { command: 'tree-sitter', args: [] };
+    return { command: global.command, args: [] };
   }
 
   console.warn(
-    `warning: tree-sitter ${found?.[0] ?? reported.trim()} is installed but the grammar is pinned to ` +
-      `${pin.treeSitterCli}. Using npx tree-sitter-cli@${pin.treeSitterCli} instead.`
+    `warning: tree-sitter ${found?.[0] ?? global.reported.trim()} is installed but the grammar is ` +
+      `pinned to ${pin.treeSitterCli}. Using npx tree-sitter-cli@${pin.treeSitterCli} instead.`
   );
   return pinned;
 }
