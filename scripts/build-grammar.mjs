@@ -7,9 +7,11 @@
 
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'grammar');
 const pin = JSON.parse(readFileSync(path.join(root, 'grammar-pin.json'), 'utf8'));
@@ -67,46 +69,20 @@ function resolveGrammarDir() {
   return { dir: cache, pinned: true };
 }
 
-// spawnSync launches an executable directly, and on Windows a globally installed
-// node tool is a .cmd shim that only a shell would resolve. Naming the shim keeps
-// the arguments out of a shell, which would otherwise need quoting for any path
-// containing a space.
-const executableNames = (command) =>
-  process.platform === 'win32' ? [`${command}.cmd`, `${command}.exe`, command] : [command];
-
-function findGlobalTreeSitter() {
-  for (const command of executableNames('tree-sitter')) {
-    const reported = capture(command, ['--version']);
-    if (reported) {
-      return { command, reported };
-    }
-  }
-  return undefined;
-}
-
-// A global CLI is used only when its minor version matches the pin. The CLI
-// decides the parser ABI, and a mismatch produces a wasm that loads fine here but
-// makes setLanguage throw at runtime, surfacing only as highlighting that never
-// starts. An older CLI also spells this command `build-wasm`.
+// The CLI comes from devDependencies rather than from $PATH, because the CLI
+// version decides the parser ABI: a mismatch with web-tree-sitter yields a wasm
+// that only fails at runtime, surfacing as highlighting that never starts.
+//
+// Its native binary is invoked directly rather than through the `tree-sitter` bin
+// shim. On Windows that shim is a .cmd, which Node refuses to spawn without a
+// shell, and going through a shell would mean quoting every path by hand.
 function resolveTreeSitterCli() {
-  const [npx] = executableNames('npx');
-  const pinned = { command: npx, args: ['--yes', `tree-sitter-cli@${pin.treeSitterCli}`] };
-  const global = findGlobalTreeSitter();
-  if (!global) {
-    return pinned;
+  const packageDir = path.dirname(require.resolve('tree-sitter-cli/package.json'));
+  const binary = path.join(packageDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter');
+  if (!existsSync(binary)) {
+    throw new Error(`tree-sitter-cli is installed but its binary is missing at ${binary}. Run npm install.`);
   }
-
-  const found = /(\d+)\.(\d+)\.(\d+)/.exec(global.reported);
-  const wanted = /(\d+)\.(\d+)\.(\d+)/.exec(pin.treeSitterCli);
-  if (found && wanted && found[1] === wanted[1] && found[2] === wanted[2]) {
-    return { command: global.command, args: [] };
-  }
-
-  console.warn(
-    `warning: tree-sitter ${found?.[0] ?? global.reported.trim()} is installed but the grammar is ` +
-      `pinned to ${pin.treeSitterCli}. Using npx tree-sitter-cli@${pin.treeSitterCli} instead.`
-  );
-  return pinned;
+  return binary;
 }
 
 const { dir: grammarDir, pinned } = resolveGrammarDir();
@@ -128,7 +104,7 @@ const queryOut = path.join(outDir, 'highlights.scm');
 mkdirSync(outDir, { recursive: true });
 
 console.log(`building grammar from ${grammarDir}`);
-run(cli.command, [...cli.args, 'build', '--wasm', '-o', wasmOut, grammarDir]);
+run(cli, ['build', '--wasm', '-o', wasmOut, grammarDir]);
 copyFileSync(path.join(grammarDir, 'queries', 'highlights.scm'), queryOut);
 
 for (const asset of [wasmOut, queryOut]) {

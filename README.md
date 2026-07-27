@@ -123,6 +123,11 @@ Press `F5` in VS Code to launch an extension host with the extension loaded.
 are build outputs of the grammar repository, which stays the single source of
 truth for Tono syntax.
 
+The `tree-sitter` CLI is a devDependency pinned to an exact version rather than
+something you install yourself. That version decides the parser ABI, and a
+mismatch with `web-tree-sitter` produces a wasm that only fails once the editor
+tries to load it.
+
 The script builds from a sibling `tree-sitter-tono` checkout when it finds one, or
 from `$TREE_SITTER_TONO_DIR`, and otherwise clones the pinned revision. When a
 local checkout is ahead of the pin it builds anyway and warns, so grammar changes
