@@ -188,7 +188,7 @@
     "compile": "tsc -p ./",
     "bundle": "node esbuild.mjs",
     "bundle:prod": "node esbuild.mjs --production",
-    "test": "npm run build:grammar && npm run bundle:prod && npm run compile && node --test out/test/*.test.js",
+    "test": "npm run build:grammar && npm run bundle:prod && npm run compile && node --test \"out/test/**/*.test.js\"",
     "package": "vsce package",
     "vscode:prepublish": "npm run build:grammar && npm run bundle:prod"
   },

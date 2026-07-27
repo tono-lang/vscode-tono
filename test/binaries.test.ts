@@ -8,14 +8,22 @@ import {
   type ResolveContext,
 } from '../src/binaries';
 
-function context(executables: readonly string[], overrides: Partial<ResolveContext> = {}): ResolveContext {
+function context(
+  executables: readonly string[],
+  overrides: Partial<ResolveContext> = {},
+  markers: readonly string[] = []
+): ResolveContext {
   const present = new Set(executables);
+  const existing = new Set([...executables, ...markers]);
   return {
     env: { PATH: ['/usr/local/bin', '/usr/bin'].join(path.delimiter) },
     workspaceFolders: [],
     home: '/home/dev',
     exeSuffix: '',
-    probe: { isExecutable: (candidate) => present.has(candidate) },
+    probe: {
+      isExecutable: (candidate) => present.has(candidate),
+      exists: (candidate) => existing.has(candidate),
+    },
     ...overrides,
   };
 }
@@ -99,6 +107,32 @@ describe('resolveLanguageServer', () => {
     const ctx = context([withSuffix], { exeSuffix: '.exe', env: { PATH: '/tools' } });
     const result = resolveLanguageServer('', undefined, ctx);
     assert.deepEqual(result, { kind: 'found', path: withSuffix, source: '$PATH' });
+  });
+
+  it('finds a windows shim, which is how package managers install binaries', () => {
+    const shim = path.join('/tools', 'tono_lsp.cmd');
+    const ctx = context([shim], { exeSuffix: '.exe', env: { PATH: '/tools' } });
+    assert.equal(resolveLanguageServer('', undefined, ctx).kind === 'found', true);
+  });
+
+  it('stops climbing at the project root instead of reaching into a parent', () => {
+    // A build tree above the project belongs to something else.
+    const outside = path.join('/home/dev', '_build', 'default', 'lsp', 'tono_lsp.exe');
+    const ctx = context(
+      [outside],
+      { workspaceFolders: [path.join('/home/dev', 'work', 'api')] },
+      [path.join('/home/dev', 'work', 'api', 'tono.toml')]
+    );
+    const result = resolveLanguageServer('', undefined, ctx);
+    assert.equal(result.kind, 'not-found');
+  });
+
+  it('still searches the project root itself', () => {
+    const inside = path.join('/repo', '_build', 'default', 'lsp', 'tono_lsp.exe');
+    const ctx = context([inside], { workspaceFolders: ['/repo'] }, [
+      path.join('/repo', 'dune-project'),
+    ]);
+    assert.equal(resolveLanguageServer('', undefined, ctx).kind === 'found', true);
   });
 });
 

@@ -68,15 +68,16 @@ class FakeDocument {
   readonly languageId = 'tono';
   readonly isUntitled = false;
   readonly isDirty = false;
-  readonly uri: { fsPath: string };
+  readonly uri: { fsPath: string; scheme: string; toString(): string };
   private versionRead = 0;
 
   constructor(
     fsPath: string,
     private readonly text: string,
-    private readonly versions: readonly number[]
+    private readonly versions: readonly number[],
+    scheme = 'file'
   ) {
-    this.uri = { fsPath };
+    this.uri = { fsPath, scheme, toString: () => `${scheme}://${fsPath}` };
   }
 
   get version(): number {
@@ -103,10 +104,21 @@ const logged: string[] = [];
 const commands = new Map<string, () => Promise<void>>();
 const appliedEdits: FakeWorkspaceEdit[] = [];
 const shownErrors: string[] = [];
+const shownWarnings: string[] = [];
+const configListeners: ((event: { affectsConfiguration(section: string): boolean }) => void)[] = [];
 
 let provider: SemanticTokensProviderLike | undefined;
 let legend: { tokenTypes: string[]; tokenModifiers: string[] } | undefined;
 let activeDocument: FakeDocument | undefined;
+let providerRegistrations = 0;
+let providerDisposals = 0;
+
+/** Fires the extension's configuration listener for one changed section. */
+function changeConfiguration(section: string): void {
+  for (const listener of configListeners) {
+    listener({ affectsConfiguration: (candidate) => candidate === section });
+  }
+}
 
 const explicitStub: Record<string, unknown> = {
   Range: FakeRange,
@@ -128,7 +140,13 @@ const explicitStub: Record<string, unknown> = {
       show: () => undefined,
       dispose: () => undefined,
     }),
-    showWarningMessage: () => Promise.resolve(undefined),
+    // A notification carrying action buttons stays open until the user answers,
+    // so its promise must not resolve on its own. Code that awaits one would
+    // otherwise look fine here and hang in a real editor.
+    showWarningMessage: (message: string, ...actions: string[]) => {
+      shownWarnings.push(message);
+      return actions.length > 0 ? new Promise<undefined>(() => undefined) : Promise.resolve(undefined);
+    },
     showErrorMessage: (message: string) => {
       shownErrors.push(message);
       return Promise.resolve(undefined);
@@ -141,14 +159,22 @@ const explicitStub: Record<string, unknown> = {
   commands: {
     registerCommand: (id: string, handler: () => Promise<void>) => {
       commands.set(id, handler);
-      return new FakeDisposable();
+      return new FakeDisposable(() => commands.delete(id));
     },
     executeCommand: () => Promise.resolve(undefined),
   },
   workspace: {
     workspaceFolders: undefined,
     getConfiguration: () => ({ get: (key: string) => settings.get(key) }),
-    onDidChangeConfiguration: () => new FakeDisposable(),
+    onDidChangeConfiguration: (listener: (event: { affectsConfiguration(s: string): boolean }) => void) => {
+      configListeners.push(listener);
+      return new FakeDisposable(() => {
+        const at = configListeners.indexOf(listener);
+        if (at >= 0) {
+          configListeners.splice(at, 1);
+        }
+      });
+    },
     getWorkspaceFolder: () => undefined,
     applyEdit: (edit: FakeWorkspaceEdit) => {
       appliedEdits.push(edit);
@@ -163,7 +189,10 @@ const explicitStub: Record<string, unknown> = {
     ) => {
       provider = registered;
       legend = registeredLegend;
-      return new FakeDisposable();
+      providerRegistrations++;
+      return new FakeDisposable(() => {
+        providerDisposals++;
+      });
     },
   },
 };
@@ -187,9 +216,31 @@ type Loader = (request: string, parent: unknown, isMain: boolean) => unknown;
 const loaderHost = Module as unknown as { _load: Loader };
 let originalLoad: Loader;
 
+interface ExtensionContext {
+  extensionUri: { fsPath: string };
+  subscriptions: { dispose(): void }[];
+}
+
 interface ExtensionModule {
-  activate(context: { extensionUri: { fsPath: string }; subscriptions: unknown[] }): Promise<void>;
+  activate(context: ExtensionContext): Promise<void>;
   deactivate(): Promise<void>;
+}
+
+const extensionContext: ExtensionContext = {
+  extensionUri: { fsPath: root },
+  subscriptions: [],
+};
+
+/**
+ * Shuts the extension down the way VS Code does, which includes disposing
+ * everything the extension registered. Without that, a listener belonging to a
+ * dead instance keeps reacting to configuration changes.
+ */
+async function deactivateFully(): Promise<void> {
+  await extension.deactivate();
+  for (const subscription of extensionContext.subscriptions.splice(0)) {
+    subscription.dispose();
+  }
 }
 
 let extension: ExtensionModule;
@@ -222,11 +273,11 @@ before(async () => {
   };
 
   extension = require(path.join(root, 'dist', 'extension.js')) as ExtensionModule;
-  await extension.activate({ extensionUri: { fsPath: root }, subscriptions: [] });
+  await extension.activate(extensionContext);
 });
 
 after(async () => {
-  await extension.deactivate();
+  await deactivateFully();
   loaderHost._load = originalLoad;
 });
 
@@ -277,8 +328,13 @@ describe('the packaged extension bundle', () => {
   });
 });
 
+// The stand-in CLI is a POSIX shell script, and execFile cannot run a .cmd shim
+// without a shell. Binary resolution itself is covered per-platform in
+// test/binaries.test.ts, which is what actually branches on Windows.
+const needsShell = { skip: process.platform === 'win32' ? 'the stand-in CLI is a shell script' : false };
+
 describe('the format command', () => {
-  it('replaces the document with what the CLI printed', async () => {
+  it('replaces the document with what the CLI printed', needsShell, async () => {
     activeDocument = new FakeDocument(documentPath, 'struct charge{amount:i64}', [7, 7]);
     await commands.get('tono.format')?.();
 
@@ -289,7 +345,7 @@ describe('the format command', () => {
     assert.deepEqual(shownErrors, []);
   });
 
-  it('discards the result when the file changed while formatting', async () => {
+  it('discards the result when the file changed while formatting', needsShell, async () => {
     // Otherwise whatever the user typed during the CLI run would be reverted.
     activeDocument = new FakeDocument(documentPath, 'struct charge{amount:i64}', [7, 8]);
     await commands.get('tono.format')?.();
@@ -298,11 +354,80 @@ describe('the format command', () => {
     assert.ok(logged.some((entry) => entry.includes('changed while formatting')));
   });
 
-  it('does nothing when the document is already formatted', async () => {
+  it('does nothing when the document is already formatted', needsShell, async () => {
     activeDocument = new FakeDocument(documentPath, FORMATTED, [7, 7]);
     await commands.get('tono.format')?.();
 
     assert.deepEqual(appliedEdits, []);
     assert.deepEqual(shownErrors, []);
+  });
+
+  it('refuses a document that is not a file on disk', async () => {
+    // A diff view has an fsPath, so without a scheme check the CLI would format
+    // the working tree while the edit targeted a read-only buffer.
+    activeDocument = new FakeDocument(documentPath, 'struct charge{}', [7, 7], 'git');
+    await commands.get('tono.format')?.();
+
+    assert.deepEqual(appliedEdits, []);
+    assert.ok(shownWarnings.some((entry) => entry.includes('saved on disk')));
+  });
+});
+
+describe('the extension lifecycle', () => {
+  async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+    const deadline = Date.now() + 5000;
+    while (!predicate()) {
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for ${label}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  it('finishes activating when the language server is missing', async () => {
+    // The warning offers an action button, so its promise never settles on its
+    // own. Awaiting it would leave the extension activating forever, which is the
+    // ordinary first run: the README documents building the server separately.
+    settings.set('server.enabled', true);
+    settings.set('server.path', path.join(workDir, 'no-such-server'));
+    await deactivateFully();
+
+    let timer: NodeJS.Timeout | undefined;
+    const activating = extension.activate(extensionContext).then(() => 'activated');
+    const timeout = new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve('still activating'), 2000);
+    });
+
+    const outcome = await Promise.race([activating, timeout]);
+    clearTimeout(timer);
+    assert.equal(outcome, 'activated');
+    assert.ok(shownWarnings.some((entry) => entry.includes('not an executable file')));
+
+    settings.set('server.enabled', false);
+    settings.set('server.path', '');
+  });
+
+  it('keeps exactly one highlighter when a config change races activation', async () => {
+    await deactivateFully();
+    providerRegistrations = 0;
+    providerDisposals = 0;
+
+    // The toggle lands while activation is still loading the grammar. Without a
+    // generation check both loads register, and the orphan can never be freed:
+    // web-tree-sitter offers no way to release a Language.
+    const activating = extension.activate(extensionContext);
+    changeConfiguration('tono.highlight.enabled');
+    await activating;
+
+    await waitUntil(() => providerRegistrations >= 2, 'the queued highlighter to load');
+    assert.equal(providerRegistrations - providerDisposals, 1, 'more than one live highlighter');
+  });
+
+  it('unregisters highlighting on deactivate', async () => {
+    await deactivateFully();
+    assert.equal(providerRegistrations - providerDisposals, 0);
+
+    // Leave the extension running for any test that follows.
+    await extension.activate(extensionContext);
   });
 });

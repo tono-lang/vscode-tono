@@ -70,6 +70,13 @@ describe('buildTokenSpans', () => {
     assert.deepEqual(sketch(spans), ['0:0+1 comment', '1:0+1 comment']);
   });
 
+  it('counts a lone carriage return as a line break', () => {
+    // VS Code normalizes mixed terminators, but a caller passing raw text would
+    // otherwise get every span after the lone \r attributed to the wrong line.
+    const spans = buildTokenSpans('a\rb\nc', [capture('comment', 0, 5)]);
+    assert.deepEqual(sketch(spans), ['0:0+1 comment', '1:0+1 comment', '2:0+1 comment']);
+  });
+
   it('resolves equal spans in favour of the earlier query pattern', () => {
     // tree-sitter highlighting gives precedence to the first matching pattern.
     const spans = buildTokenSpans('string', [

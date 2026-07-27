@@ -14,18 +14,27 @@ import { registerCommands, TONO_LANGUAGE_ID } from './cli/commands';
 import { registerHighlighting } from './highlight/provider';
 import { createLanguageClient } from './lsp/client';
 
-const DOCUMENT_SELECTOR: vscode.DocumentSelector = [{ scheme: 'file', language: TONO_LANGUAGE_ID }];
+// Highlighting is a pure function of the buffer text, so it applies to every
+// scheme. Restricting it to `file` would leave Tono uncoloured in diff views and
+// in the Timeline, and with no TextMate grammar there is nothing to fall back on.
+const HIGHLIGHT_SELECTOR: vscode.DocumentSelector = [{ language: TONO_LANGUAGE_ID }];
 
 function isExecutable(candidate: string): boolean {
   try {
     if (!fs.statSync(candidate).isFile()) {
       return false;
     }
+    // Windows reports every existing file as executable, so there the extension
+    // list in binaries.ts is what actually decides.
     fs.accessSync(candidate, fs.constants.X_OK);
     return true;
   } catch {
     return false;
   }
+}
+
+function exists(candidate: string): boolean {
+  return fs.existsSync(candidate);
 }
 
 function resolveContext(): ResolveContext {
@@ -34,7 +43,7 @@ function resolveContext(): ResolveContext {
     workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
     home: os.homedir(),
     exeSuffix: process.platform === 'win32' ? '.exe' : '',
-    probe: { isExecutable },
+    probe: { isExecutable, exists },
   };
 }
 
@@ -53,6 +62,10 @@ class TonoExtension {
   // they trigger is queued. Two quick edits to tono.server.path would otherwise
   // start a second server while the first is still shutting down.
   private pending: Promise<unknown> = Promise.resolve();
+  // Bumped by every start and stop. Loading the grammar is asynchronous, so a
+  // load that finishes after it was superseded has to throw its result away:
+  // web-tree-sitter has no way to free a Language, making an orphan permanent.
+  private highlightGeneration = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -86,17 +99,25 @@ class TonoExtension {
     if (this.highlighting || !(settings().get<boolean>('highlight.enabled') ?? true)) {
       return;
     }
+    this.warnIfSemanticHighlightingOff();
+
+    const generation = ++this.highlightGeneration;
     const root = this.context.extensionUri.fsPath;
     try {
-      this.highlighting = await registerHighlighting(
+      const registration = await registerHighlighting(
         {
           runtimeDir: path.join(root, 'dist'),
           parserWasmPath: path.join(root, 'grammar', 'tono.wasm'),
           queryPath: path.join(root, 'grammar', 'highlights.scm'),
         },
-        DOCUMENT_SELECTOR,
+        HIGHLIGHT_SELECTOR,
         this.log
       );
+      if (generation !== this.highlightGeneration) {
+        registration.dispose();
+        return;
+      }
+      this.highlighting = registration;
     } catch (error) {
       this.log.error(`tree-sitter highlighting is unavailable: ${String(error)}`);
       void vscode.window.showWarningMessage(
@@ -106,8 +127,26 @@ class TonoExtension {
   }
 
   private stopHighlighting(): void {
+    this.highlightGeneration++;
     this.highlighting?.dispose();
     this.highlighting = undefined;
+  }
+
+  /**
+   * Tono has no TextMate grammar, so semantic tokens are the only source of
+   * colour. When they are switched off the file renders as plain text with
+   * nothing in the UI to explain why.
+   */
+  private warnIfSemanticHighlightingOff(): void {
+    const enabled = vscode.workspace
+      .getConfiguration('editor')
+      .get<boolean | string>('semanticHighlighting.enabled');
+    if (enabled === false) {
+      this.log.warn(
+        'editor.semanticHighlighting.enabled is false, so Tono files will not be coloured. ' +
+          'Set it to true or "configuredByTheme".'
+      );
+    }
   }
 
   private async startServer(): Promise<void> {
@@ -126,7 +165,10 @@ class TonoExtension {
       if (resolution.kind === 'not-found') {
         this.log.info(`searched for tono_lsp in:\n  ${resolution.searched.join('\n  ')}`);
       }
-      await this.reportMissingServer(describeFailure('Tono language server (tono_lsp)', resolution));
+      // Deliberately not awaited. A notification carrying an action button stays
+      // pending until the user answers it, and awaiting that here would leave the
+      // extension activating forever on the common first run with no server built.
+      void this.reportMissingServer(describeFailure('Tono language server (tono_lsp)', resolution));
       return;
     }
 
@@ -136,7 +178,11 @@ class TonoExtension {
     try {
       await client.start();
     } catch (error) {
-      this.client = undefined;
+      // Only clear the field if it still holds this client: a restart that
+      // overlapped this one would otherwise lose track of a running process.
+      if (this.client === client) {
+        this.client = undefined;
+      }
       this.log.error(`the Tono language server failed to start: ${String(error)}`);
       void vscode.window.showErrorMessage(
         'The Tono language server failed to start. See the Tono output channel for details.'

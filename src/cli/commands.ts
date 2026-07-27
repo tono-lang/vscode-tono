@@ -27,8 +27,13 @@ async function activeTonoFile(): Promise<vscode.TextDocument | undefined> {
     return undefined;
   }
   const document = editor.document;
-  if (document.isUntitled) {
-    void vscode.window.showWarningMessage('Save the file to disk before running Tono commands.');
+  // A document from a diff view or the Timeline has an fsPath pointing at the
+  // working tree, so the CLI would read a different revision than the one on
+  // screen and the resulting edit could not be applied anyway.
+  if (document.isUntitled || document.uri.scheme !== 'file') {
+    void vscode.window.showWarningMessage(
+      'Tono commands need a file saved on disk. This buffer is not one.'
+    );
     return undefined;
   }
   if (document.isDirty && !(await document.save())) {
@@ -72,6 +77,8 @@ async function formatCommand(deps: CommandDeps): Promise<void> {
     const result = await run(cli, formatArgs(document.uri.fsPath), {
       cwd: path.dirname(document.uri.fsPath),
       maxBuffer: 32 * 1024 * 1024,
+      // A hung formatter would otherwise leave the command silently unresolved.
+      timeout: 30_000,
     });
     formatted = result.stdout;
   } catch (error) {
@@ -115,13 +122,10 @@ async function previewCommand(deps: CommandDeps): Promise<void> {
   }
 
   const settings = vscode.workspace.getConfiguration('tono', document.uri);
+  const watching = settings.get<boolean>('preview.watch') ?? true;
   let args: string[];
   try {
-    args = previewArgs(
-      document.uri.fsPath,
-      settings.get<string[]>('preview.targets') ?? [],
-      settings.get<boolean>('preview.watch') ?? true
-    );
+    args = previewArgs(document.uri.fsPath, settings.get<string[]>('preview.targets') ?? [], watching);
   } catch (error) {
     void vscode.window.showErrorMessage(String(error instanceof Error ? error.message : error));
     return;
@@ -130,12 +134,15 @@ async function previewCommand(deps: CommandDeps): Promise<void> {
   // A task rather than a child process: preview streams output and, in watch
   // mode, keeps running until the user stops it.
   const task = new vscode.Task(
-    { type: 'tono', command: 'preview' },
+    // The file is part of the task identity: a dedicated panel keyed only on
+    // "preview" would let a second file take over the first one's terminal.
+    { type: 'tono', command: 'preview', file: document.uri.toString() },
     vscode.workspace.getWorkspaceFolder(document.uri) ?? vscode.TaskScope.Workspace,
-    'preview',
+    `preview ${path.basename(document.uri.fsPath)}`,
     'tono',
     new vscode.ProcessExecution(cli, args, { cwd: path.dirname(document.uri.fsPath) })
   );
+  task.isBackground = watching;
   task.presentationOptions = {
     reveal: vscode.TaskRevealKind.Always,
     panel: vscode.TaskPanelKind.Dedicated,

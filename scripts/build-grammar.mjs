@@ -57,18 +57,38 @@ function resolveGrammarDir() {
     mkdirSync(path.dirname(cache), { recursive: true });
     run('git', ['clone', '--quiet', pin.repository, cache]);
   }
-  run('git', ['fetch', '--quiet', 'origin', pin.rev], { cwd: cache });
+  // Only reach for the network when the pinned commit is genuinely missing, so a
+  // warm cache builds offline. Fetching a bare SHA also needs the remote to allow
+  // it, which a corporate mirror may not.
+  if (!capture('git', ['rev-parse', '--verify', `${pin.rev}^{commit}`], { cwd: cache })) {
+    run('git', ['fetch', '--quiet', 'origin', pin.rev], { cwd: cache });
+  }
   run('git', ['checkout', '--quiet', pin.rev], { cwd: cache });
   return { dir: cache, pinned: true };
 }
 
-// A globally installed CLI wins so contributors control the ABI they generate
-// with; otherwise pull the exact version the grammar itself is developed against.
+// A global CLI is used only when its minor version matches the pin. The CLI
+// decides the parser ABI, and a mismatch produces a wasm that loads fine here but
+// makes setLanguage throw at runtime, surfacing only as highlighting that never
+// starts. An older CLI also spells this command `build-wasm`.
 function resolveTreeSitterCli() {
-  if (capture('tree-sitter', ['--version'])) {
+  const pinned = { command: 'npx', args: ['--yes', `tree-sitter-cli@${pin.treeSitterCli}`] };
+  const reported = capture('tree-sitter', ['--version']);
+  if (!reported) {
+    return pinned;
+  }
+
+  const found = /(\d+)\.(\d+)\.(\d+)/.exec(reported);
+  const wanted = /(\d+)\.(\d+)\.(\d+)/.exec(pin.treeSitterCli);
+  if (found && wanted && found[1] === wanted[1] && found[2] === wanted[2]) {
     return { command: 'tree-sitter', args: [] };
   }
-  return { command: 'npx', args: ['--yes', `tree-sitter-cli@${pin.treeSitterCli}`] };
+
+  console.warn(
+    `warning: tree-sitter ${found?.[0] ?? reported.trim()} is installed but the grammar is pinned to ` +
+      `${pin.treeSitterCli}. Using npx tree-sitter-cli@${pin.treeSitterCli} instead.`
+  );
+  return pinned;
 }
 
 const { dir: grammarDir, pinned } = resolveGrammarDir();

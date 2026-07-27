@@ -2,7 +2,16 @@ import path from 'node:path';
 
 export interface FsProbe {
   isExecutable(candidate: string): boolean;
+  /** True when the path exists, used to recognise a project root. */
+  exists(candidate: string): boolean;
 }
+
+/**
+ * Files that mark the top of a project. The build-tree search stops here so it
+ * cannot reach out of the project and pick up an unrelated binary from a parent
+ * directory, and so it does not stat its way to the filesystem root.
+ */
+const PROJECT_ROOT_MARKERS = ['tono.toml', 'dune-project', 'Cargo.toml', '.git'];
 
 export interface ResolveContext {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -39,6 +48,19 @@ function ancestors(from: string): string[] {
   }
 }
 
+/**
+ * Executable file names to try for a command, most specific first.
+ *
+ * On Windows the binary is rarely the bare name: package managers install `.cmd`
+ * or `.bat` shims, and only extensions listed in PATHEXT are executable at all.
+ * On Unix a dune executable keeps the `.exe` suffix it was built with.
+ */
+function fileNames(name: string, exeSuffix: string): string[] {
+  return exeSuffix === '.exe'
+    ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name]
+    : [name, `${name}.exe`];
+}
+
 function pathDirs(env: ResolveContext['env']): string[] {
   return (env['PATH'] ?? env['Path'] ?? '')
     .split(path.delimiter)
@@ -70,15 +92,10 @@ function resolve(cascade: Cascade, ctx: ResolveContext): Resolution {
 
   const tryDir = (dir: string, source: string): Resolution | undefined => {
     for (const name of cascade.names) {
-      const found = tryFile(path.join(dir, name + ctx.exeSuffix), source);
-      if (found) {
-        return found;
-      }
-      // A dune executable keeps its .exe suffix even on Unix.
-      if (ctx.exeSuffix !== '.exe') {
-        const dune = tryFile(path.join(dir, `${name}.exe`), source);
-        if (dune) {
-          return dune;
+      for (const candidate of fileNames(name, ctx.exeSuffix)) {
+        const found = tryFile(path.join(dir, candidate), source);
+        if (found) {
+          return found;
         }
       }
     }
@@ -124,6 +141,9 @@ function resolve(cascade: Cascade, ctx: ResolveContext): Resolution {
         if (found) {
           return found;
         }
+      }
+      if (PROJECT_ROOT_MARKERS.some((marker) => ctx.probe.exists(path.join(ancestor, marker)))) {
+        break;
       }
     }
   }
