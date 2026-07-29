@@ -1,0 +1,16 @@
+.vscode/**
+.github/**
+.grammar-cache/**
+node_modules/**
+out/**
+src/**
+test/**
+scripts/**
+esbuild.mjs
+tsconfig.json
+grammar-pin.json
+**/*.map
+**/*.ts
+.gitignore
+.vscodeignore
+.typos.toml
