@@ -1,0 +1,207 @@
+{
+  "name": "vscode-tono",
+  "displayName": "Tono",
+  "description": "Tono language support: syntax highlighting from the tree-sitter grammar, diagnostics, hover and formatting from the Tono language server.",
+  "version": "0.1.0",
+  "publisher": "tono-lang",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tono-lang/vscode-tono.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tono-lang/vscode-tono/issues"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "keywords": [
+    "tono",
+    "idl",
+    "sdk",
+    "codegen",
+    "tree-sitter"
+  ],
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:tono",
+    "workspaceContains:**/tono.toml"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "tono",
+        "aliases": [
+          "Tono",
+          "tono"
+        ],
+        "extensions": [
+          ".tono"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "escapeSequence",
+        "superType": "string",
+        "description": "An escape sequence inside a Tono string literal."
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "builtin",
+        "description": "A name provided by the Tono language itself rather than by user code."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "tono",
+        "scopes": {
+          "keyword": [
+            "keyword.control.tono"
+          ],
+          "type": [
+            "entity.name.type.tono"
+          ],
+          "type.builtin": [
+            "support.type.tono"
+          ],
+          "typeParameter": [
+            "entity.name.type.parameter.tono"
+          ],
+          "function": [
+            "entity.name.function.tono"
+          ],
+          "namespace": [
+            "entity.name.namespace.tono"
+          ],
+          "property": [
+            "variable.other.property.tono"
+          ],
+          "enumMember": [
+            "variable.other.enummember.tono"
+          ],
+          "decorator": [
+            "entity.name.decorator.tono",
+            "entity.name.function.decorator.tono"
+          ],
+          "escapeSequence": [
+            "constant.character.escape.tono"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "tono.format",
+        "title": "Tono: Format File",
+        "enablement": "editorLangId == tono"
+      },
+      {
+        "command": "tono.preview",
+        "title": "Tono: Preview Generated Code",
+        "enablement": "editorLangId == tono"
+      },
+      {
+        "command": "tono.restartServer",
+        "title": "Tono: Restart Language Server"
+      },
+      {
+        "command": "tono.showServerOutput",
+        "title": "Tono: Show Language Server Output"
+      }
+    ],
+    "configuration": {
+      "title": "Tono",
+      "properties": {
+        "tono.server.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the Tono language server to provide diagnostics, hover, go to definition and formatting.",
+          "scope": "window"
+        },
+        "tono.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `tono_lsp` executable. When empty, the extension looks at `$TONO_LSP`, then next to the `tono` CLI, then on `$PATH`, then in a local dune build tree (`_build/default/lsp/tono_lsp.exe`).",
+          "scope": "machine-overridable"
+        },
+        "tono.server.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC messages exchanged with the Tono language server.",
+          "scope": "window"
+        },
+        "tono.cli.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `tono` CLI, used by the format and preview commands. When empty, the extension looks at `$TONO_CLI`, then on `$PATH`, then in a local cargo target directory.",
+          "scope": "machine-overridable"
+        },
+        "tono.highlight.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Highlight Tono files using the tree-sitter grammar. Requires semantic highlighting to be on: see `#editor.semanticHighlighting.enabled#`.",
+          "scope": "window"
+        },
+        "tono.preview.targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ts",
+              "rust",
+              "go",
+              "java",
+              "python"
+            ]
+          },
+          "default": [
+            "ts"
+          ],
+          "description": "Targets passed to `tono preview --target` by the preview command.",
+          "scope": "resource"
+        },
+        "tono.preview.watch": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run `tono preview` in watch mode so the preview refreshes when the file changes.",
+          "scope": "resource"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:grammar": "node scripts/build-grammar.mjs",
+    "compile": "tsc -p ./",
+    "bundle": "node esbuild.mjs",
+    "bundle:prod": "node esbuild.mjs --production",
+    "test": "npm run build:grammar && npm run bundle:prod && npm run compile && node --test \"out/test/**/*.test.js\"",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run build:grammar && npm run bundle:prod"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0",
+    "web-tree-sitter": "^0.26.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.91.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.0",
+    "tree-sitter-cli": "0.26.8",
+    "typescript": "^5.9.0"
+  }
+}

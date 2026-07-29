@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Binary discovery and the build scripts both branch on the platform, so both
+    # are exercised rather than assumed.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Builds the grammar from the revision in grammar-pin.json, typechecks, and
+      # runs the suite against both the sources and the bundled extension.
+      - run: npm test
+
+  package:
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx vsce package --out vscode-tono.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: vscode-tono.vsix
+
+  ci-success:
+    runs-on: ubuntu-latest
+    needs: [test, package]
+    if: always()
+    steps:
+      - name: Check that every job passed
+        run: |
+          for result in "${{ needs.test.result }}" "${{ needs.package.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "a required job did not pass"
+              exit 1
+            fi
+          done
